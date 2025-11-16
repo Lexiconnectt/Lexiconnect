@@ -1200,6 +1200,315 @@ async def get_graph_data(
         )
 
 
+@router.get("/word-graph-data")
+async def get_word_graph_data(
+    word: str,
+    language: Optional[str] = None,
+    db=Depends(get_db_dependency),
+):
+    """Get morphological graph data for a specific word
+    
+    This endpoint returns:
+    - The searched word node
+    - Its parent text, section, and phrase
+    - Its morphemes (prefix, stem, suffix)
+    - Related words that share the same morphemes
+    - Glosses for the morphemes
+    
+    Args:
+        word: The surface form of the word to search
+        language: Optional language filter
+    """
+    try:
+        nodes = []
+        edges = []
+        
+        # Define colors for each node type
+        node_colors = {
+            "Text": "#f59e0b",  # amber
+            "Section": "#8b5cf6",  # purple
+            "Phrase": "#06b6d4",  # cyan
+            "Word": "#0ea5e9",  # blue
+            "Morpheme": "#10b981",  # green
+            "Gloss": "#ec4899",  # pink
+        }
+        
+        node_sizes = {
+            "Text": 30,
+            "Section": 22,
+            "Phrase": 16,
+            "Word": 10,
+            "Morpheme": 8,
+            "Gloss": 7,
+        }
+        
+        # Find the word and its context
+        lang_filter = "AND w.language = $language" if language else ""
+        
+        # Simple, direct query that gets everything step by step
+        cypher_query = f"""
+        MATCH (w:Word {{surface_form: $word}})
+        WHERE 1=1 {lang_filter}
+        
+        // Get context
+        OPTIONAL MATCH (t:Text)-[:SECTION_PART_OF_TEXT]->(s:Section)-[:PHRASE_IN_SECTION]->(ph:Phrase)-[:PHRASE_COMPOSED_OF]->(w)
+        
+        // Get target word morphemes
+        OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
+        
+        // Get target word glosses
+        OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m2:Morpheme)<-[:ANALYZES]-(g:Gloss)
+        
+        WITH w, t, s, ph, collect(DISTINCT m) as target_morphemes, collect(DISTINCT g) as target_glosses
+        
+        // Find related words - any word that shares at least one morpheme
+        OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(shared:Morpheme)<-[:WORD_MADE_OF]-(related:Word)
+        WHERE related.ID <> w.ID
+        
+        WITH w, t, s, ph, target_morphemes, target_glosses, collect(DISTINCT related) as related_words
+        
+        RETURN w as target_word, 
+               t as text, 
+               s as section, 
+               ph as phrase,
+               target_morphemes,
+               target_glosses,
+               related_words
+        """
+        
+        result = db.run(cypher_query, word=word, language=language)
+        record = result.single()
+        
+        if not record or not record.get("target_word"):
+            logger.warning(f"Word '{word}' not found in database")
+            return {
+                "nodes": [],
+                "edges": [],
+                "stats": {"node_count": 0, "edge_count": 0},
+                "message": f"Word '{word}' not found"
+            }
+        
+        # Debug logging
+        target_morphemes = record.get("target_morphemes", [])
+        target_glosses = record.get("target_glosses", [])
+        related_words = record.get("related_words", [])
+        
+        logger.info(f"Found word '{word}'")
+        logger.info(f"Target morphemes: {len(target_morphemes)} - {[m.get('surface_form', '') if hasattr(m, 'get') else str(m) for m in target_morphemes[:5]]}")
+        logger.info(f"Target glosses: {len(target_glosses)}")
+        logger.info(f"Related words: {len(related_words)} - {[w.get('surface_form', '') if hasattr(w, 'get') else str(w) for w in related_words[:5]]}")
+        
+        seen_node_ids = set()
+        node_id_map = {}  # Map neo4j internal id to our string id
+        
+        def add_node(node_obj, node_type):
+            """Helper to add a node if not already seen"""
+            if node_obj is None:
+                return None
+            
+            node_id = str(node_obj.id)
+            if node_id in seen_node_ids:
+                return node_id
+            
+            seen_node_ids.add(node_id)
+            node_props = dict(node_obj)
+            
+            # Get label text
+            label_text = node_props.get("ID", "")
+            if node_type == "Text":
+                label_text = node_props.get("title", label_text)
+            elif node_type == "Word":
+                label_text = node_props.get("surface_form", label_text)
+            elif node_type == "Morpheme":
+                label_text = node_props.get("surface_form", node_props.get("citation_form", label_text))
+            elif node_type == "Gloss":
+                label_text = node_props.get("annotation", label_text)[:20]
+            elif node_type == "Phrase":
+                label_text = node_props.get("surface_text", label_text)[:30]
+            elif node_type == "Section":
+                label_text = node_props.get("ID", label_text)
+            
+            nodes.append({
+                "id": node_id,
+                "label": label_text,
+                "type": node_type,
+                "color": node_colors.get(node_type, "#64748b"),
+                "size": node_sizes.get(node_type, 10),
+                "properties": node_props,
+            })
+            
+            node_id_map[node_obj.id] = node_id
+            return node_id
+        
+        def add_edge(source_id, target_id, rel_type):
+            """Helper to add an edge"""
+            if source_id and target_id:
+                # Ensure IDs are strings
+                source_str = str(source_id)
+                target_str = str(target_id)
+                edge_id = f"edge-{len(edges)}"
+                
+                edge_data = {
+                    "id": edge_id,
+                    "source": source_str,
+                    "target": target_str,
+                    "type": str(rel_type) if rel_type else "",
+                    "size": 2,
+                    "color": "#94a3b8",
+                }
+                edges.append(edge_data)
+                logger.debug(f"Created edge: {edge_id} from {source_str} to {target_str}")
+        
+        # Add the target word (center node, make it larger)
+        target_word = record["target_word"]
+        word_id = add_node(target_word, "Word")
+        if word_id:
+            # Make the searched word larger
+            for node in nodes:
+                if node["id"] == word_id:
+                    node["size"] = 15
+                    node["color"] = "#3b82f6"  # Brighter blue for focus
+        
+        # Add context nodes (Text, Section, Phrase)
+        text_node = record.get("text")
+        section_node = record.get("section")
+        phrase_node = record.get("phrase")
+        
+        text_id = add_node(text_node, "Text") if text_node else None
+        section_id = add_node(section_node, "Section") if section_node else None
+        phrase_id = add_node(phrase_node, "Phrase") if phrase_node else None
+        
+        # Add edges for context hierarchy
+        if text_id and section_id:
+            add_edge(text_id, section_id, "SECTION_PART_OF_TEXT")
+        if section_id and phrase_id:
+            add_edge(section_id, phrase_id, "PHRASE_IN_SECTION")
+        if phrase_id and word_id:
+            add_edge(phrase_id, word_id, "PHRASE_COMPOSED_OF")
+        
+        # Add target word morphemes and glosses
+        morpheme_ids = []
+        morpheme_id_map = {}  # neo4j id -> graph node id
+        
+        for morpheme in target_morphemes:
+            if morpheme:
+                m_id = add_node(morpheme, "Morpheme")
+                if m_id and word_id:
+                    morpheme_ids.append(m_id)
+                    morpheme_id_map[morpheme.id] = m_id
+                    add_edge(word_id, m_id, "WORD_MADE_OF")
+                    logger.info(f"Added morpheme: {morpheme.get('surface_form', 'unknown')}, edge from word {word_id} to morpheme {m_id}")
+        
+        # Add glosses - query to find correct morpheme relationships
+        for gloss in target_glosses:
+            if gloss:
+                g_id = add_node(gloss, "Gloss")
+                if g_id:
+                    # Query which morpheme(s) this gloss analyzes
+                    gloss_morph_query = """
+                    MATCH (g:Gloss)-[:ANALYZES]->(m:Morpheme)
+                    WHERE id(g) = $gloss_id
+                    RETURN id(m) as morph_id
+                    """
+                    gm_result = db.run(gloss_morph_query, gloss_id=gloss.id)
+                    for gm_rec in gm_result:
+                        morph_graph_id = morpheme_id_map.get(gm_rec["morph_id"])
+                        if morph_graph_id:
+                            add_edge(g_id, morph_graph_id, "ANALYZES")
+                            logger.info(f"Added gloss edge from {g_id} to morpheme {morph_graph_id}")
+        
+        # Process related words - get their full data
+        related_word_count = 0
+        for rel_word in related_words:
+            if not rel_word or related_word_count >= 10:
+                break
+            
+            # Add related word node
+            rw_id = add_node(rel_word, "Word")
+            if not rw_id:
+                continue
+            
+            logger.info(f"Adding related word: {rel_word.get('surface_form', 'unknown')}")
+            related_word_count += 1
+            
+            # Query to get this word's morphemes and glosses
+            rel_word_query = """
+            MATCH (w:Word)-[:WORD_MADE_OF]->(m:Morpheme)
+            WHERE id(w) = $word_id
+            OPTIONAL MATCH (g:Gloss)-[:ANALYZES]->(m)
+            RETURN collect(DISTINCT m) as morphemes, collect(DISTINCT g) as glosses
+            """
+            rw_result = db.run(rel_word_query, word_id=rel_word.id)
+            rw_record = rw_result.single()
+            
+            if rw_record:
+                rw_morphemes = rw_record.get("morphemes", [])
+                rw_glosses = rw_record.get("glosses", [])
+                rw_morph_id_map = {}
+                
+                # Add morphemes for this related word
+                for rw_morph in rw_morphemes:
+                    if rw_morph:
+                        rwm_id = add_node(rw_morph, "Morpheme")
+                        if rwm_id:
+                            rw_morph_id_map[rw_morph.id] = rwm_id
+                            add_edge(rw_id, rwm_id, "WORD_MADE_OF")
+                            logger.info(f"Added morpheme for related word: {rw_morph.get('surface_form', 'unknown')}")
+                
+                # Add glosses for this related word
+                for rw_gloss in rw_glosses:
+                    if rw_gloss:
+                        rwg_id = add_node(rw_gloss, "Gloss")
+                        if rwg_id:
+                            # Find which morpheme this gloss analyzes
+                            rwg_morph_query = """
+                            MATCH (g:Gloss)-[:ANALYZES]->(m:Morpheme)
+                            WHERE id(g) = $gloss_id
+                            RETURN id(m) as morph_id
+                            """
+                            rwgm_result = db.run(rwg_morph_query, gloss_id=rw_gloss.id)
+                            for rwgm_rec in rwgm_result:
+                                rwm_graph_id = rw_morph_id_map.get(rwgm_rec["morph_id"])
+                                if rwm_graph_id:
+                                    add_edge(rwg_id, rwm_graph_id, "ANALYZES")
+        
+        # Validate edges before returning
+        node_id_set = {n["id"] for n in nodes}
+        valid_edges = []
+        
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            
+            if source in node_id_set and target in node_id_set:
+                valid_edges.append(edge)
+            else:
+                logger.warning(f"Skipping invalid edge: {edge['id']} - source={source} (exists={source in node_id_set}), target={target} (exists={target in node_id_set})")
+        
+        logger.info(f"Returning {len(nodes)} nodes and {len(valid_edges)} valid edges (filtered {len(edges) - len(valid_edges)} invalid) for word '{word}'")
+        logger.info(f"Node types: {[n['type'] for n in nodes]}")
+        logger.info(f"Sample edges: {valid_edges[:3] if valid_edges else 'none'}")
+        
+        return {
+            "nodes": nodes,
+            "edges": valid_edges,
+            "stats": {
+                "node_count": len(nodes),
+                "edge_count": len(valid_edges),
+                "searched_word": word,
+                "morpheme_count": len([n for n in nodes if n['type'] == 'Morpheme']),
+                "related_word_count": len([n for n in nodes if n['type'] == 'Word']) - 1  # -1 for target word
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching word graph data: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=400, detail=f"Error fetching word graph data: {str(e)}"
+        )
+
+
 @router.delete("/wipe-database")
 async def wipe_database(db=Depends(get_db_dependency)):
     """Wipe all linguistic data from the database

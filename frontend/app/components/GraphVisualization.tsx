@@ -32,6 +32,7 @@ type GraphQueryFilters = {
   textId?: string;
   language?: string;
   nodeTypes?: string[];
+  searchWord?: string;
 };
 
 const MIN_GRAPH_LIMIT = 10;
@@ -71,6 +72,40 @@ const arraysMatch = (a?: string[], b?: string[]) => {
 
   return a.every((value, index) => value === b[index]);
 };
+
+// Fetch word-specific graph data from API
+async function fetchWordGraphData(word: string, signal?: AbortSignal) {
+  try {
+    const params = new URLSearchParams();
+    params.append("word", word);
+
+    const url = `/api/v1/linguistic/word-graph-data?${params.toString()}`;
+    const response = await fetch(url, { signal });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch word graph data: ${response.status} ${response.statusText}`
+      );
+    }
+    const data = await response.json();
+    console.log("Fetched word graph data:", {
+      word,
+      nodeCount: data.nodes?.length || 0,
+      edgeCount: data.edges?.length || 0,
+      stats: data.stats,
+      nodeTypes: data.nodes?.map((n: any) => n.type) || [],
+      sampleNodes: data.nodes?.slice(0, 5) || [],
+      sampleEdges: data.edges?.slice(0, 5) || [],
+    });
+    return data;
+  } catch (error) {
+    const err = error as { name?: string; message?: string };
+    if (err?.name === "AbortError") {
+      throw error;
+    }
+    console.error("Error fetching word graph data:", error);
+    throw error;
+  }
+}
 
 // Fetch graph data from API
 async function fetchGraphData(options: GraphFetchOptions = {}) {
@@ -236,48 +271,121 @@ function buildGraphFromData(data: any) {
       console.log("Sample edges to process:", data.edges.slice(0, 3));
       console.log("Available nodes:", graph.nodes().slice(0, 5));
 
+      // Track added edges to prevent duplicates
+      const addedEdges = new Set<string>();
+      let duplicateCount = 0;
+
       data.edges.forEach((edge: any, index: number) => {
         try {
-          // Ensure both source and target are strings
-          const sourceId = String(edge.source);
-          const targetId = String(edge.target);
+          // Validate edge structure
+          if (!edge || typeof edge !== "object") {
+            console.error(`Invalid edge at index ${index}:`, edge);
+            return;
+          }
+
+          if (!edge.source || !edge.target) {
+            console.error(
+              `Edge missing source or target at index ${index}:`,
+              edge
+            );
+            return;
+          }
+
+          // Ensure both source and target are strings and valid
+          const sourceId = String(edge.source).trim();
+          const targetId = String(edge.target).trim();
+
+          // Check for empty strings
+          if (!sourceId || !targetId) {
+            console.error(
+              `Edge has empty source or target at index ${index}:`,
+              {
+                source: sourceId,
+                target: targetId,
+                originalEdge: edge,
+              }
+            );
+            return;
+          }
+
+          // Check for duplicate edges
+          const edgeKey = `${sourceId}→${targetId}`;
+          if (addedEdges.has(edgeKey)) {
+            duplicateCount++;
+            console.debug(`Skipping duplicate edge ${index}: ${edgeKey}`);
+            return;
+          }
 
           // Only add edge if both source and target nodes exist
-          if (graph.hasNode(sourceId) && graph.hasNode(targetId)) {
-            // Adjust edge styling - use light blue with transparency
-            const edgeSize = isDenseGraph
-              ? Math.max((edge.size || 2) * 0.8, 1.5) // Ensure minimum size of 1.5
-              : Math.max(edge.size || 2, 1.5);
-            const edgeColor = (edge.color || "#60a5fa") + "DD"; // Light blue with 87% opacity
-
-            // Use a unique edge ID
-            const edgeId =
-              edge.id || `edge-${edge.source}-${edge.target}-${index}`;
-
-            // For MultiDirectedGraph, pass the edge key as first parameter to allow duplicate edges
-            graph.addEdge(edgeId, sourceId, targetId, {
-              size: edgeSize,
-              color: edgeColor,
-              type: "line", // Explicitly set edge type
-              relationshipType: edge.type || "", // Store relationship type separately
-            });
-          } else {
-            console.warn(`Skipping edge ${index}: missing nodes`, {
-              source: sourceId,
-              target: targetId,
-              hasSource: graph.hasNode(sourceId),
-              hasTarget: graph.hasNode(targetId),
-            });
+          if (!graph.hasNode(sourceId)) {
+            console.warn(
+              `Source node "${sourceId}" not found for edge ${index}`
+            );
+            return;
           }
+
+          if (!graph.hasNode(targetId)) {
+            console.warn(
+              `Target node "${targetId}" not found for edge ${index}`
+            );
+            return;
+          }
+
+          // Adjust edge styling - use light blue with transparency
+          const edgeSize = isDenseGraph
+            ? Math.max((edge.size || 2) * 0.8, 1.5)
+            : Math.max(edge.size || 2, 1.5);
+          const edgeColor = (edge.color || "#60a5fa") + "DD";
+
+          // Use a unique edge ID
+          const edgeId = edge.id || `edge-${sourceId}-${targetId}-${index}`;
+
+          // Create attributes object with validated values
+          const attributes = {
+            size: Number(edgeSize) || 2,
+            color: String(edgeColor),
+            type: "line",
+            relationshipType: String(edge.type || ""),
+          };
+
+          // Verify all required parameters before calling
+          if (typeof edgeId !== "string" || !edgeId) {
+            console.error(`Invalid edgeId at index ${index}:`, edgeId);
+            return;
+          }
+
+          // Add edge with explicit key
+          graph.addEdgeWithKey(edgeId, sourceId, targetId, attributes);
+
+          // Mark this edge as added
+          addedEdges.add(edgeKey);
+
+          console.log(
+            `✓ Added edge ${index}: ${sourceId} → ${targetId} (${
+              edge.type || "unknown"
+            })`
+          );
         } catch (error) {
-          console.warn("Error adding edge:", edge, error);
+          console.error(`✗ Error adding edge at index ${index}:`, {
+            edge,
+            source: edge?.source,
+            target: edge?.target,
+            error,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          });
         }
       });
+
+      if (duplicateCount > 0) {
+        console.log(`Skipped ${duplicateCount} duplicate edges`);
+      }
 
       console.log(`Successfully added ${graph.size} edges to graph`);
       console.log("Graph summary:", {
         nodeCount: graph.order,
         edgeCount: graph.size,
+        duplicatesSkipped: duplicateCount,
         sampleNodes: graph.nodes().slice(0, 3),
         sampleEdges: graph.edges().slice(0, 3),
       });
@@ -336,10 +444,22 @@ function LoadGraph({
 
     const loadData = async () => {
       try {
-        const data = await fetchGraphData({
-          ...filters,
-          signal: controller.signal,
-        });
+        let data;
+
+        // If searching for a specific word, use word-graph-data endpoint
+        if (filters.searchWord) {
+          data = await fetchWordGraphData(
+            filters.searchWord,
+            controller.signal
+          );
+        } else {
+          // Otherwise use regular graph-data endpoint
+          data = await fetchGraphData({
+            ...filters,
+            signal: controller.signal,
+          });
+        }
+
         if (controller.signal.aborted) {
           return;
         }
@@ -533,7 +653,13 @@ function GraphLegend() {
   );
 }
 
-export default function GraphVisualization() {
+interface GraphVisualizationProps {
+  searchWord?: string;
+}
+
+export default function GraphVisualization({
+  searchWord,
+}: GraphVisualizationProps = {}) {
   const exportOptions = useMemo<ExportOption[]>(
     () => [
       {
@@ -571,6 +697,26 @@ export default function GraphVisualization() {
   const [graphFilters, setGraphFilters] = useState<GraphQueryFilters>({
     limit: DEFAULT_GRAPH_LIMIT,
   });
+
+  // Update filters when searchWord changes
+  useEffect(() => {
+    if (searchWord) {
+      setGraphFilters((prev) => ({
+        ...prev,
+        searchWord,
+      }));
+      setConnectionError(null);
+      // Force a refresh to update Sigma settings
+      setRefreshKey((prev) => prev + 1);
+    } else {
+      setGraphFilters((prev) => {
+        const { searchWord: _, ...rest } = prev;
+        return rest;
+      });
+      // Force a refresh when clearing word search
+      setRefreshKey((prev) => prev + 1);
+    }
+  }, [searchWord]);
   const [hasData, setHasData] = useState<boolean | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
@@ -837,6 +983,9 @@ export default function GraphVisualization() {
       setRefreshKey((prev) => prev + 1);
       setShowWipeConfirm(false);
 
+      // Dispatch custom event to notify other components (like DatabaseStatistics) to refresh
+      window.dispatchEvent(new CustomEvent("databaseWiped"));
+
       // Show success message (you could add a toast notification here)
       alert(
         `Database wiped successfully! Deleted: ${Object.entries(
@@ -1022,12 +1171,13 @@ export default function GraphVisualization() {
           minEdgeSize: 0.5,
           maxEdgeSize: 3,
           edgeColor: "#60a5faDD",
-          labelSize: 10,
-          labelWeight: "normal",
-          labelColor: { color: "#44403c" },
-          labelRenderedSizeThreshold: 12, // only show labels for larger / central nodes
-          labelDensity: 0.2,
-          labelGridCellSize: 100,
+          labelSize: 12,
+          labelWeight: "bold",
+          labelColor: { color: "#1c1917" },
+          // Show all labels when visualizing a word, otherwise only show large nodes
+          labelRenderedSizeThreshold: searchWord ? 0 : 12,
+          labelDensity: searchWord ? 1 : 0.2,
+          labelGridCellSize: searchWord ? 200 : 100,
           enableEdgeEvents: true,
           allowInvalidContainer: true,
           zIndex: true,
