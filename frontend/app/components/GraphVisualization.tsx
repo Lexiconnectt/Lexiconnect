@@ -1015,7 +1015,6 @@ export default function GraphVisualization() {
         style={{ height: "100%", width: "100%", minHeight: "400px" }}
         settings={{
           renderEdgeLabels: false,
-          renderEdges: true,
           defaultNodeColor: "#57534e",
           defaultEdgeColor: "#60a5faDD",
           defaultEdgeType: "line",
