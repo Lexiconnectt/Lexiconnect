@@ -255,7 +255,7 @@ function buildGraphFromData(data: any) {
               edge.id || `edge-${edge.source}-${edge.target}-${index}`;
 
             // For MultiDirectedGraph, pass the edge key as first parameter to allow duplicate edges
-            graph.addEdgeWithKey(edgeId, sourceId, targetId, {
+            graph.addEdge(edgeId, sourceId, targetId, {
               size: edgeSize,
               color: edgeColor,
               type: "line", // Explicitly set edge type
@@ -1015,6 +1015,7 @@ export default function GraphVisualization() {
         style={{ height: "100%", width: "100%", minHeight: "400px" }}
         settings={{
           renderEdgeLabels: false,
+          renderEdges: true,
           defaultNodeColor: "#57534e",
           defaultEdgeColor: "#60a5faDD",
           defaultEdgeType: "line",
