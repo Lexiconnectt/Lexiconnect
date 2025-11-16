@@ -38,6 +38,7 @@ type GraphQueryFilters = {
 const MIN_GRAPH_LIMIT = 10;
 const MAX_GRAPH_LIMIT = 1000;
 const DEFAULT_GRAPH_LIMIT = 200;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 const clampLimitValue = (value?: number) => {
   const numeric =
@@ -79,7 +80,7 @@ async function fetchWordGraphData(word: string, signal?: AbortSignal) {
     const params = new URLSearchParams();
     params.append("word", word);
 
-    const url = `/api/v1/linguistic/word-graph-data?${params.toString()}`;
+    const url = `${API_URL}/api/v1/linguistic/word-graph-data?${params.toString()}`;
     const response = await fetch(url, { signal });
     if (!response.ok) {
       throw new Error(
@@ -126,7 +127,7 @@ async function fetchGraphData(options: GraphFetchOptions = {}) {
       params.append("node_types", nodeTypes.join(","));
     }
 
-    const url = `/api/v1/linguistic/graph-data?${params.toString()}`;
+    const url = `${API_URL}/api/v1/linguistic/graph-data?${params.toString()}`;
     const response = await fetch(url, { signal });
     if (!response.ok) {
       throw new Error(
@@ -968,7 +969,7 @@ export default function GraphVisualization({
   const handleWipeDatabase = async () => {
     setIsWiping(true);
     try {
-      const response = await fetch("/api/v1/linguistic/wipe-database", {
+      const response = await fetch(`${API_URL}/api/v1/linguistic/wipe-database`, {
         method: "DELETE",
       });
 
