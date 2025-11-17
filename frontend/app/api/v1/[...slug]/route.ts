@@ -31,11 +31,11 @@ function getForwardHeaders(request: NextRequest): HeadersInit {
 // Handle all HTTP methods
 async function handler(
   request: NextRequest,
-  { params }: { params: { path?: string[] } }
+  { params }: { params: { slug: string[] } }
 ) {
   try {
     // Build the backend URL
-    const path = params.path?.join('/') || '';
+    const path = params.slug?.join('/') || '';
     const url = new URL(`${BACKEND_URL}/api/v1/${path}`);
     
     // Forward query parameters
@@ -99,27 +99,27 @@ async function handler(
 }
 
 // Export handlers for all HTTP methods
-export async function GET(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function GET(request: NextRequest, context: { params: { slug: string[] } }) {
   return handler(request, context);
 }
 
-export async function POST(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function POST(request: NextRequest, context: { params: { slug: string[] } }) {
   return handler(request, context);
 }
 
-export async function PUT(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function PUT(request: NextRequest, context: { params: { slug: string[] } }) {
   return handler(request, context);
 }
 
-export async function DELETE(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function DELETE(request: NextRequest, context: { params: { slug: string[] } }) {
   return handler(request, context);
 }
 
-export async function PATCH(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function PATCH(request: NextRequest, context: { params: { slug: string[] } }) {
   return handler(request, context);
 }
 
-export async function OPTIONS(request: NextRequest, context: { params: { path?: string[] } }) {
+export async function OPTIONS(request: NextRequest, context: { params: { slug: string[] } }) {
   return new NextResponse(null, {
     status: 204,
     headers: {
