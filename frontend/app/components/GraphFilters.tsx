@@ -211,7 +211,7 @@ export default function GraphFilters({
               <option value="full">Full Detail (All Types)</option>
             </select>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              For complex texts like btz1, try "High Level" or "Medium" first
+              For complex texts, try "High Level" or "Medium" first
             </p>
           </div>
 

@@ -172,7 +172,7 @@ class ElanParser:
     ) -> List[InterlinearTextCreate]:
         """Convert ElanDoc structure to InterlinearTextCreate objects"""
         
-        # Find the main transcription tier (typically a tier without parent or most common parent)
+        # Find the main transcription tier
         main_tier = self._find_main_transcription_tier(doc.tiers)
         if not main_tier:
             # If no main tier found, use the first tier with alignable annotations
@@ -196,34 +196,92 @@ class ElanParser:
                 )
             ]
 
-        # Group alignable annotations by time to create sections
-        alignable_anns = [
+        # Find the word tier and gloss tier
+        word_tier = None
+        gloss_tier = None
+        pos_tier = None
+        
+        for tier in doc.tiers:
+            if tier.parent_ref == main_tier.ID:
+                tier_id_lower = tier.ID.lower()
+                tier_type_lower = (tier.linguistic_type_ref or "").lower()
+                
+                # Look for word-level tier (often called "full" or contains "word")
+                if "full" in tier_id_lower or "word" in tier_id_lower or "full" in tier_type_lower:
+                    word_tier = tier
+                # Look for phrase-level translation tier
+                elif "eng_u" in tier_id_lower or ("eng" in tier_id_lower and "phrase" in tier_type_lower):
+                    pass  # We'll handle phrase-level translations separately
+            
+            # Look for gloss tier (child of word tier)
+            if word_tier and tier.parent_ref == word_tier.ID:
+                tier_id_lower = tier.ID.lower()
+                if "eng" in tier_id_lower or "gls" in tier_id_lower or "gloss" in tier_id_lower:
+                    gloss_tier = tier
+            
+            # Look for POS tier (might not have parent or be child of word tier)
+            if "pos" in tier.ID.lower() or "pos" in (tier.linguistic_type_ref or "").lower():
+                pos_tier = tier
+
+        # Build lookup maps for efficient access
+        word_annotations_map: Dict[str, List[ElanAnnotation]] = {}
+        if word_tier:
+            for word_ann in word_tier.annotations:
+                if word_ann.ref_id:
+                    if word_ann.ref_id not in word_annotations_map:
+                        word_annotations_map[word_ann.ref_id] = []
+                    word_annotations_map[word_ann.ref_id].append(word_ann)
+        
+        gloss_map: Dict[str, str] = {}
+        if gloss_tier:
+            for gloss_ann in gloss_tier.annotations:
+                if gloss_ann.ref_id:
+                    gloss_map[gloss_ann.ref_id] = gloss_ann.value
+        
+        pos_map: Dict[str, List[str]] = {}
+        if pos_tier:
+            for pos_ann in pos_tier.annotations:
+                if pos_ann.ref_id:
+                    pos_str = pos_ann.value.strip()
+                    pos_map[pos_ann.ref_id] = [p.strip() for p in pos_str.split(",") if p.strip()]
+
+        # Get phrase-level annotations (alignable annotations from main tier)
+        phrase_anns = [
             a for a in main_tier.annotations if a.start_ms is not None
         ]
-        alignable_anns.sort(key=lambda x: x.start_ms or 0)
+        phrase_anns.sort(key=lambda x: x.start_ms or 0)
 
-        # Create sections from alignable annotations (each annotation becomes a phrase)
+        # Create sections from phrases (each phrase becomes its own section)
         sections = []
-        for section_idx, ann in enumerate(alignable_anns):
-            phrases = []
-            phrase = self._create_phrase_from_annotation(
-                ann, main_tier, doc.tiers, section_idx, file_path
-            )
+        
+        for section_idx, phrase_ann in enumerate(phrase_anns):
+            # Get word annotations for this phrase
+            word_anns = word_annotations_map.get(phrase_ann.ID, [])
+            
+            # If no word tier found, fall back to splitting surface text
+            if not word_anns and not word_tier:
+                phrase = self._create_phrase_from_surface_text(
+                    phrase_ann, section_idx, file_path
+                )
+            else:
+                phrase = self._create_phrase_from_elan_hierarchy(
+                    phrase_ann, 
+                    word_anns,
+                    gloss_map,
+                    pos_map,
+                    section_idx, 
+                    file_path
+                )
+            
+            # Create one section per phrase
             if phrase:
-                phrases.append(phrase)
-
-            if phrases:
                 section_id = stable_uuid("section", file_path, str(section_idx))
-                all_words = []
-                for phrase in phrases:
-                    all_words.extend(phrase.words)
-
                 sections.append(
                     SectionCreate(
                         id=section_id,
                         order=section_idx,
-                        phrases=phrases,
-                        words=all_words,
+                        phrases=[phrase],
+                        words=phrase.words,
                     )
                 )
 
@@ -266,102 +324,94 @@ class ElanParser:
         
         return None
 
-    def _create_phrase_from_annotation(
+    def _create_phrase_from_elan_hierarchy(
         self,
-        ann: ElanAnnotation,
-        main_tier: ElanTier,
-        all_tiers: List[ElanTier],
+        phrase_ann: ElanAnnotation,
+        word_anns: List[ElanAnnotation],
+        gloss_map: Dict[str, str],
+        pos_map: Dict[str, List[str]],
         phrase_order: int,
         file_path: str,
     ) -> Optional[PhraseCreate]:
-        """Create a PhraseCreate from an ELAN annotation and its child annotations"""
+        """Create a PhraseCreate from ELAN hierarchical annotations (phrase -> words -> glosses)"""
         
-        phrase_id = stable_uuid("phrase", file_path, ann.ID, str(phrase_order))
-        surface_text = ann.value.strip()
+        phrase_id = stable_uuid("phrase", file_path, phrase_ann.ID, str(phrase_order))
+        surface_text = phrase_ann.value.strip()
         
-        # Find child tiers (tiers that have this tier as parent)
-        child_tiers = [
-            tier for tier in all_tiers if tier.parent_ref == main_tier.ID
-        ]
-        
-        # Look for annotations that reference this annotation
-        child_annotations: Dict[str, List[ElanAnnotation]] = {}
-        for tier in child_tiers:
-            for child_ann in tier.annotations:
-                if child_ann.ref_id == ann.ID:
-                    tier_type = tier.linguistic_type_ref or tier.ID.lower()
-                    if tier_type not in child_annotations:
-                        child_annotations[tier_type] = []
-                    child_annotations[tier_type].append(child_ann)
-
-        # Parse words from surface text and match with gloss/translation tiers
+        # Create words from the word tier annotations
         words = []
-        if surface_text:
-            # Split surface text into words
-            word_tokens = surface_text.split()
-            for word_idx, token in enumerate(word_tokens):
-                word_id = stable_uuid("word", phrase_id, str(word_idx))
-                
-                # Try to find matching gloss/translation from child annotations
-                gloss = ""
-                pos: List[str] = []
-                morphemes: List[MorphemeCreate] = []
-                
-                # Look for gloss tier
-                for tier_type, anns in child_annotations.items():
-                    tier_type_lower = tier_type.lower()
-                    if "gloss" in tier_type_lower or "gls" in tier_type_lower:
-                        # Try to match by position or use first available
-                        if anns:
-                            # Simple heuristic: use annotation at same index or first one
-                            if word_idx < len(anns):
-                                gloss = anns[word_idx].value.strip()
-                            elif anns:
-                                # If fewer annotations than words, use first available
-                                gloss = anns[0].value.strip()
-                    elif "pos" in tier_type_lower or "part" in tier_type_lower:
-                        if anns and word_idx < len(anns):
-                            pos_str = anns[word_idx].value.strip()
-                            pos = [p.strip() for p in pos_str.split(",") if p.strip()]
-                    elif "morph" in tier_type_lower or "morpheme" in tier_type_lower:
-                        if anns and word_idx < len(anns):
-                            morph_value = anns[word_idx].value.strip()
-                            # Try to parse morpheme (simple heuristic)
-                            if morph_value:
-                                morph_id = stable_uuid(
-                                    "morph", word_id, morph_value, str(0)
-                                )
-                                morphemes.append(
-                                    MorphemeCreate(
-                                        id=morph_id,
-                                        type=MorphemeType.OTHER,
-                                        surface_form=morph_value,
-                                        citation_form="",
-                                        gloss="",
-                                        msa="",
-                                        language="unknown",
-                                    )
-                                )
-
-                words.append(
-                    WordCreate(
-                        id=word_id,
-                        surface_form=token,
-                        gloss=gloss,
-                        pos=pos,
-                        morphemes=morphemes,
-                        language="unknown",
-                    )
+        for word_idx, word_ann in enumerate(word_anns):
+            word_id = stable_uuid("word", phrase_id, word_ann.ID, str(word_idx))
+            
+            # Get gloss from gloss_map
+            gloss = gloss_map.get(word_ann.ID, "")
+            
+            # Get POS from pos_map
+            pos = pos_map.get(word_ann.ID, [])
+            
+            # For now, morphemes are empty
+            morphemes: List[MorphemeCreate] = []
+            
+            # Look for morpheme-level information if the word has morpheme separators
+            word_surface = word_ann.value.strip()
+            if "-" in word_surface or "=" in word_surface:
+                # Could parse morphemes here
+                pass
+            
+            words.append(
+                WordCreate(
+                    id=word_id,
+                    surface_form=word_surface,
+                    gloss=gloss,
+                    pos=pos,
+                    morphemes=morphemes,
+                    language="unknown",
                 )
-
-        language = self._detect_language_from_tier(main_tier) or "unknown"
-
+            )
+        
         return PhraseCreate(
             id=phrase_id,
             segnum=str(phrase_order),
             surface_text=surface_text,
             words=words,
-            language=language,
+            language="unknown",
+            order=phrase_order,
+        )
+
+    def _create_phrase_from_surface_text(
+        self,
+        phrase_ann: ElanAnnotation,
+        phrase_order: int,
+        file_path: str,
+    ) -> Optional[PhraseCreate]:
+        """Fallback: Create a PhraseCreate by splitting surface text (when no word tier exists)"""
+        
+        phrase_id = stable_uuid("phrase", file_path, phrase_ann.ID, str(phrase_order))
+        surface_text = phrase_ann.value.strip()
+        
+        # Split surface text into words
+        words = []
+        if surface_text:
+            word_tokens = surface_text.split()
+            for word_idx, token in enumerate(word_tokens):
+                word_id = stable_uuid("word", phrase_id, str(word_idx))
+                words.append(
+                    WordCreate(
+                        id=word_id,
+                        surface_form=token,
+                        gloss="",
+                        pos=[],
+                        morphemes=[],
+                        language="unknown",
+                    )
+                )
+    
+        return PhraseCreate(
+            id=phrase_id,
+            segnum=str(phrase_order),
+            surface_text=surface_text,
+            words=words,
+            language="unknown",
             order=phrase_order,
         )
 
