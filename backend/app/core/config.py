@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",  # Next.js development
         "http://frontend:3000",  # Docker internal network
-        "https://your-app.vercel.app",  # Vercel production
+        "https://lexiconnect-eight.vercel.app/",  # Vercel production
         "https://your-custom-domain.com",  # Custom domain
     ]
 

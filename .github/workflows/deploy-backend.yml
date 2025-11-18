@@ -1,0 +1,22 @@
+name: Deploy backend to GCE
+
+on:
+  push:
+    branches: [main]   
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: SSH and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 34.134.154.139         
+          username: amax               
+          key: ${{ secrets.BACKEND_SSH_KEY }}
+          script: |
+            cd /home/amax/src/Lexiconnect
+            ./deploy-backend.sh

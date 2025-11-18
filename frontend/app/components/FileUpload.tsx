@@ -97,8 +97,8 @@ export default function FileUpload({
 
       const isFlextext = selectedFile.name.endsWith(".flextext");
       const endpoint = isFlextext
-        ? "/api/v1/linguistic/upload-flextext"
-        : "/api/v1/linguistic/upload-elan";
+        ? `/api/v1/linguistic/upload-flextext`
+        : `/api/v1/linguistic/upload-elan`;
 
       const response = await fetch(endpoint, {
         method: "POST",
