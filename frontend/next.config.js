@@ -2,15 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  async rewrites() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${apiUrl}/api/:path*`,
-      },
-    ];
-  },
+  // API proxying is handled by Next.js API Routes in app/api/v1/[[...path]]/route.ts
+  // This allows Vercel deployment to proxy HTTPS -> HTTP backend requests
 };
 
 module.exports = nextConfig;
