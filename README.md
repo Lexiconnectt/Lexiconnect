@@ -255,12 +255,30 @@ docker run -p 8000:8000 \
   lexiconnect-backend
 ```
 
+## 📚 Documentation
+
+Comprehensive documentation is available in the `docs/` directory:
+
+- **[Documentation Index](./docs/README.md)** - Overview of all documentation
+- **[User Guide](./docs/user/README.md)** - Complete guide for end users
+- **[Developer Guide](./docs/developer/README.md)** - Comprehensive developer documentation
+  - [Architecture](./docs/developer/architecture.md) - System architecture and design
+  - [Setup Guide](./docs/developer/setup.md) - Development environment setup
+  - [API Reference](./docs/developer/api-reference.md) - Complete API documentation
+  - [Code Structure](./docs/developer/code-structure.md) - Codebase organization
+  - [Contributing](./docs/developer/contributing.md) - Contribution guidelines
+- **[Database Schema](./DATABASE.md)** - Neo4j database structure
+- **[Export System](./docs/export_system.md)** - Export system documentation
+- **[Testing Guide](./backend/tests/TESTS_README.md)** - How to run tests
+
 ## 📁 Project Structure
 
 ```
 Lexiconnect/
 ├── README.md
+├── DATABASE.md                  # Database schema documentation
 ├── docker-compose.yml
+├── start-free.sh                # Quick start script
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -284,6 +302,11 @@ Lexiconnect/
 │       ├── page.tsx
 │       ├── globals.css
 │       └── providers.tsx
+├── docs/                        # Documentation
+│   ├── README.md
+│   ├── user/                    # User documentation
+│   ├── developer/               # Developer documentation
+│   └── *.md                     # Technical documentation
 └── gcp/
     ├── cloudbuild.yaml
     └── terraform/
